@@ -1,55 +1,67 @@
 # std libraries
-import re
 import typing
 import asyncio
 
-from enum import Enum, IntEnum
+from enum import Enum
+from inspect import Parameter, _ParameterKind
 
 # third party
 import discord
+import tempfile
 
 from bs4 import BeautifulSoup
 from discord.ext import commands
+from discord.ext.commands.errors import ClientException, MissingRequiredArgument
 
-BOT = typing.TypeVar("BOT", bound="Bot")
+# local
+from .bot import Bot, BOT
 
 class TagTable(Enum):
 	bot_starting = "<bot"
 	bot_ending = "/bot>"
 	run = "<run>"
-
-class Bot(commands.Bot, typing.Generic[BOT]):
-	def __init__(self, command_prefix, help_command=None, description=None, **options):
-		self.token = options.pop("token")
-		super().__init__(command_prefix, help_command, description, **options)
+	
+def indent(text: str, amount, ch=' '):
+	padding = amount * ch
+	return ''.join(padding+line for line in text.splitlines(keepends=False))
 
 class Parser:
 	def __init__(self) -> None:
 		pass
 
 	def parse(self, contents: typing.List[str]):
-		bot: Bot = None
+		bots: typing.List[Bot] = []
+		events: typing.List[typing.Callable] = []
 		bot_initiated: typing.Optional[bool] = False
-		bot_ended: typing.Optional[bool] = False
-		for line in contents:
-			line = line.strip(" ")
-			if line.startswith("<bot"):
-				if bot_initiated:
-					raise ValueError("Max Bot Instances: 1")
-				try:
-					token = re.search(r'token=[\'"]([^\'"]*)[\'"]', line, re.MULTILINE).group(1)
-				except AttributeError:
-					raise ValueError("token parameter missing")
-				try:
-					command_prefix = re.search(r'prefix=[\'"]([^\'"]*)[\'"]', line, re.MULTILINE).group(1)
-				except AttributeError:
-					raise ValueError("prefix attribute not set.")
-				bot = Bot(token=token, command_prefix=command_prefix)
-			if line.startswith("</bot"):
-				if bot_ended:
-					raise ValueError("Max Bot Instances: 1")
-				bot_ended = True
-			if line.startswith("<run>"):
-				if not bot:
-					raise ValueError("Bot not initialized")
-				bot.run(bot.token)
+		content = "\n".join([line.strip(" ") for line in contents])
+		soup = BeautifulSoup(content, "html5lib")
+		for bot in soup.find_all("bot"):
+			prefix = bot.get("prefix")
+			token = bot.get("token")
+			prefix_param = Parameter("prefix", _ParameterKind.KEYWORD_ONLY)
+			token_param = Parameter("token", _ParameterKind.KEYWORD_ONLY)
+			if not prefix:
+				raise MissingRequiredArgument(prefix_param)
+			if not token_param:
+				raise MissingRequiredArgument(token_param)
+			bot_initiated = True
+			bots.append(Bot(prefix, token=token))
+			bot_obj = bots[0]
+			events = bot.find_all("event")
+			for event in events:
+				type = event.get("type")
+				params = event.get("parameters")
+				if not type:
+					raise MissingRequiredArgument(Parameter("type", _ParameterKind.KEYWORD_ONLY))
+				response = event.find("response")
+				content = (response.contents[0])
+				l = {}
+				exec(f"async def {type}({params}):\n{indent(text=content, amount=4)}", l)
+				bot_obj.add_listener((l[type]))
+		run = soup.find("run")
+		if run:
+			if not bot_initiated:
+				raise ClientException("Bot has not been initialized")
+			if len(bots) > 1:
+				raise RuntimeError("Exceeded max bot instances")
+			(bots[0]).run((bots[0]).token)

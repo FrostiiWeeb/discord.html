@@ -1,6 +1,17 @@
 <!DOCTYPE discord.HTML>
 <html>
   <bot token="token" prefix="!">
+    <event type="on_ready" parameters="">
+        <response>
+          print("hi")
+        </response>
+    </event>
+    <event type="on_message" parameters="message">
+      <response>
+        if message.content.startswith("!example"):
+          await message.reply("Example")
+      </response>
+    </event>
   </bot>
   <run>
 </html>
